@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Disk Usage Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1><i class="fas fa-hdd"></i> Disk Analyzer</h1>
+                <button id="backBtn" class="btn-icon-large" onclick="goUp()" title="Go Up">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+            </div>
+            <div class="controls">
+                <input type="text" id="pathInput" value="{{ current_path }}" placeholder="Enter path to scan...">
+                <button onclick="scanPath()" id="scanBtn"><i class="fas fa-search"></i> Scan</button>
+                <button onclick="shutdownServer()" id="shutdownBtn" class="btn-danger" title="Shutdown Server">
+                    <i class="fas fa-power-off"></i>
+                </button>
+            </div>
+        </header>
+
+        <main>
+            <div id="loading" class="hidden">
+                <div class="spinner"></div>
+                <p>Scanning directories... This may take a moment.</p>
+            </div>
+
+            <div id="results" class="hidden">
+                <div class="breadcrumbs" id="breadcrumbs"></div>
+
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Folder Name</th>
+                                <th>Size</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="folderList">
+                            <!-- Folders will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="empty-state" class="empty-state">
+                <i class="fas fa-folder-open"></i>
+                <p>Enter a path and click Scan to start analyzing.</p>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let currentData = [];
+
+        document.addEventListener('DOMContentLoaded', () => {
+            scanPath(); // Auto-scan default path on load
+        });
+
+        async function scanPath() {
+            const path = document.getElementById('pathInput').value;
+            const scanBtn = document.getElementById('scanBtn');
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            const emptyState = document.getElementById('empty-state');
+            const folderList = document.getElementById('folderList');
+
+            scanBtn.disabled = true;
+            loading.classList.remove('hidden');
+            results.classList.add('hidden');
+            emptyState.classList.add('hidden');
+            folderList.innerHTML = '';
+
+            try {
+                const response = await fetch(`/api/scan?path=${encodeURIComponent(path)}`);
+                const data = await response.json();
+
+                if (response.ok) {
+                    currentData = data.folders;
+                    renderFolders(data.folders);
+                    updateBreadcrumbs(data.path);
+                    results.classList.remove('hidden');
+                } else {
+                    alert('Error: ' + data.error);
+                    emptyState.classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to connect to server.');
+                emptyState.classList.remove('hidden');
+            } finally {
+                loading.classList.add('hidden');
+                scanBtn.disabled = false;
+            }
+        }
+
+        function renderFolders(folders) {
+            const tbody = document.getElementById('folderList');
+            tbody.innerHTML = '';
+
+            if (folders.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="no-data">No subfolders found or access denied.</td></tr>';
+                return;
+            }
+
+            folders.forEach(folder => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>
+                        <div class="folder-name" onclick="navigateTo('${folder.path.replace(/\\/g, '\\\\')}')">
+                            <i class="fas fa-folder"></i>
+                            <span>${folder.name}</span>
+                        </div>
+                    </td>
+                    <td class="size-col">${folder.size_readable}</td>
+                    <td class="actions-col">
+                        <button class="btn-icon" onclick="openFolder('${folder.path.replace(/\\/g, '\\\\')}')" title="Open in Explorer">
+                            <i class="fas fa-external-link-alt"></i>
+                        </button>
+                        <button class="btn-icon btn-delete" onclick="deleteFolder('${folder.path.replace(/\\/g, '\\\\')}')" title="Delete Folder">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function updateBreadcrumbs(path) {
+            const breadcrumbs = document.getElementById('breadcrumbs');
+            breadcrumbs.innerHTML = '';
+
+            // Normalize path separators
+            const parts = path.split(/[/\\]/).filter(p => p);
+
+            let accumulatedPath = '';
+
+            parts.forEach((part, index) => {
+                // If it's the first part and looks like a drive (C:), treat it as root
+                if (index === 0 && part.includes(':')) {
+                    accumulatedPath = part + '\\';
+                } else {
+                    accumulatedPath = index === 0 ? part : (accumulatedPath.endsWith('\\') ? accumulatedPath + part : accumulatedPath + '\\' + part);
+                }
+
+                const span = document.createElement('span');
+                span.className = 'breadcrumb-item';
+                span.innerText = part;
+                // Use a closure to capture the correct path
+                const targetPath = accumulatedPath;
+                span.onclick = () => navigateTo(targetPath);
+
+                breadcrumbs.appendChild(span);
+
+                if (index < parts.length - 1) {
+                    const separator = document.createElement('span');
+                    separator.className = 'breadcrumb-separator';
+                    separator.innerText = ' / ';
+                    breadcrumbs.appendChild(separator);
+                }
+            });
+        }
+
+        function goUp() {
+            const currentPath = document.getElementById('pathInput').value;
+            // Simple parent directory calculation
+            // Remove trailing slash if exists
+            let cleanPath = currentPath.endsWith('\\') || currentPath.endsWith('/') ? currentPath.slice(0, -1) : currentPath;
+
+            const lastSeparatorIndex = Math.max(cleanPath.lastIndexOf('\\'), cleanPath.lastIndexOf('/'));
+
+            if (lastSeparatorIndex > -1) {
+                // If it's just "C:", don't go up
+                if (cleanPath.length <= 3 && cleanPath.includes(':')) return;
+
+                const parentPath = cleanPath.substring(0, lastSeparatorIndex);
+                // If parent path becomes empty or just drive letter without slash, ensure it's valid
+                navigateTo(parentPath || cleanPath.substring(0, lastSeparatorIndex + 1));
+            }
+        }
+
+        async function navigateTo(path) {
+            document.getElementById('pathInput').value = path;
+            await scanPath();
+        }
+
+        async function openFolder(path) {
+            try {
+                const response = await fetch('/api/open', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+                if (!response.ok) {
+                    alert('Failed to open folder.');
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function deleteFolder(path) {
+            if (!confirm(`Are you sure you want to delete "${path}"? This cannot be undone via this app.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    // Refresh current view
+                    scanPath();
+                } else {
+                    alert('Error deleting folder: ' + result.error);
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Failed to delete folder.');
+            }
+        }
+
+        async function shutdownServer() {
+            if (!confirm('Are you sure you want to stop the application?')) {
+                return;
+            }
+
+            try {
+                await fetch('/api/shutdown', { method: 'POST' });
+                document.body.innerHTML = `
+                    <div style="display:flex;justify-content:center;align-items:center;height:100vh;background:#1a1a1a;color:white;flex-direction:column;gap:1rem;">
+                        <i class="fas fa-power-off" style="font-size:3rem;color:#ef4444;"></i>
+                        <h1>Application Stopped</h1>
+                        <p>You can close this tab now.</p>
+                    </div>
+                `;
+            } catch (e) {
+                console.error(e);
+                alert('Failed to shutdown server.');
+            }
+        }
+    </script>
+</body>
+
+</html>
