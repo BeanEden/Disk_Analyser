@@ -1,12 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Disk Usage Analyzer</title>
+    <title>Disk Usage & Duplicate Analyzer</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 
@@ -15,138 +15,360 @@
         <header>
             <div class="header-left">
                 <h1><i class="fas fa-hdd"></i> Disk Analyzer</h1>
-                <button id="backBtn" class="btn-icon-large" onclick="goUp()" title="Go Up">
-                    <i class="fas fa-arrow-left"></i>
-                </button>
+                <div class="nav-buttons">
+                    <button id="backBtn" class="btn-icon-large" onclick="goUp()" title="Dossier parent">
+                        <i class="fas fa-arrow-up"></i>
+                    </button>
+                    <button id="refreshBtn" class="btn-icon-large" onclick="refreshCurrentPath()" title="Rafraîchir ce dossier">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
             </div>
             <div class="controls">
-                <input type="text" id="pathInput" value="{{ current_path }}" placeholder="Enter path to scan...">
-                <button onclick="scanPath()" id="scanBtn"><i class="fas fa-search"></i> Scan</button>
-                <button onclick="shutdownServer()" id="shutdownBtn" class="btn-danger" title="Shutdown Server">
+                <div class="path-input-group">
+                    <i class="fas fa-folder-open"></i>
+                    <input type="text" id="pathInput" value="{{ current_path }}" placeholder="Chemin du dossier à analyser...">
+                </div>
+                <div class="toggles-group">
+                    <label class="toggle-label" title="Inclure les dossiers cachés (.cache, .ollama, .gemini, etc.)">
+                        <input type="checkbox" id="toggleHidden" checked onchange="onToggleOption()">
+                        <span>Dossiers cachés (.*)</span>
+                    </label>
+                    <label class="toggle-label" title="Inclure le dossier AppData (caches, Docker, navigateurs)">
+                        <input type="checkbox" id="toggleAppData" checked onchange="onToggleOption()">
+                        <span>AppData</span>
+                    </label>
+                </div>
+                <button onclick="scanPath(false)" id="scanBtn" title="Analyser la taille des sous-dossiers">
+                    <i class="fas fa-search"></i> Analyser
+                </button>
+                <button onclick="startDuplicateScan(false)" id="dupBtn" class="btn-secondary" title="Rechercher les doublons dans ce dossier">
+                    <i class="fas fa-copy"></i> Doublons
+                </button>
+                <button onclick="shutdownServer()" id="shutdownBtn" class="btn-danger" title="Arrêter le serveur">
                     <i class="fas fa-power-off"></i>
                 </button>
             </div>
         </header>
 
         <main>
+            <!-- Progress Card for Background Tasks -->
             <div id="loading" class="hidden">
-                <div class="spinner"></div>
-                <p>Scanning directories... This may take a moment.</p>
+                <div class="progress-card">
+                    <div class="spinner" id="spinner"></div>
+                    <div class="progress-header">
+                        <h3 id="loading-title">Analyse en cours</h3>
+                        <p id="loading-text" style="color: var(--text-secondary); font-size: 0.95rem;">Veuillez patienter...</p>
+                    </div>
+
+                    <div id="dup-progress-details" class="hidden">
+                        <div class="progress-bar-container">
+                            <div id="progressBarFill" class="progress-bar-fill"></div>
+                        </div>
+
+                        <div class="progress-metrics">
+                            <div class="metric-item">
+                                <span class="metric-label">Progression</span>
+                                <span class="metric-val" id="metricProgress">0%</span>
+                            </div>
+                            <div class="metric-item">
+                                <span class="metric-label">Fichiers analysés</span>
+                                <span class="metric-val" id="metricFiles">0</span>
+                            </div>
+                            <div class="metric-item">
+                                <span class="metric-label">Vitesse</span>
+                                <span class="metric-val" id="metricSpeed">0 fich/s</span>
+                            </div>
+                        </div>
+
+                        <button onclick="cancelDuplicateScan()" class="cancel-scan-btn">
+                            <i class="fas fa-stop-circle"></i> Arrêter l'analyse
+                        </button>
+                    </div>
+                </div>
             </div>
 
+            <!-- Folder & Files Results View -->
             <div id="results" class="hidden">
-                <div class="breadcrumbs" id="breadcrumbs"></div>
+                <div class="top-bar">
+                    <div class="breadcrumbs" id="breadcrumbs"></div>
+                    <div id="scanStatsBadge" class="scan-stats-badge">
+                        <i class="fas fa-chart-pie"></i>
+                        <span id="scanStatsText">0 éléments</span>
+                    </div>
+                </div>
 
                 <div class="table-container">
                     <table>
                         <thead>
                             <tr>
-                                <th>Folder Name</th>
-                                <th>Size</th>
-                                <th>Actions</th>
+                                <th class="sortable" onclick="sortFolderList('name')">
+                                    Nom <i id="sortIconName" class="fas fa-sort"></i>
+                                </th>
+                                <th class="size-col sortable" onclick="sortFolderList('size')">
+                                    Taille <i id="sortIconSize" class="fas fa-sort-down"></i>
+                                </th>
+                                <th class="actions-col">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="folderList">
-                            <!-- Folders will be populated here -->
+                            <!-- Folders & Files populated dynamically -->
                         </tbody>
                     </table>
                 </div>
             </div>
+            
+            <!-- Duplicates Results View -->
+            <div id="duplicate-results" class="hidden">
+                <div class="dup-header-card">
+                    <div class="dup-stats">
+                        <div class="dup-stat-item">
+                            <span class="dup-stat-label">Groupes de doublons</span>
+                            <span class="dup-stat-val" id="dupTotalGroups">0</span>
+                        </div>
+                        <div class="dup-stat-item">
+                            <span class="dup-stat-label">Espace récupérable</span>
+                            <span class="dup-stat-val highlight" id="dupTotalWasted">0 B</span>
+                        </div>
+                    </div>
+                    <div class="dup-actions">
+                        <button onclick="selectRecommendedDuplicates()" class="btn-secondary" style="font-size: 0.85rem; padding: 0.6rem 1rem;">
+                            <i class="fas fa-magic"></i> Sélection recommandée
+                        </button>
+                        <button onclick="toggleAllDuplicates(false)" class="btn-secondary" style="font-size: 0.85rem; padding: 0.6rem 1rem;">
+                            <i class="fas fa-square"></i> Tout décocher
+                        </button>
+                        <button id="deleteSelectedBtn" onclick="deleteSelectedDuplicates()" class="btn-danger" style="font-size: 0.85rem; padding: 0.6rem 1rem;">
+                            <i class="fas fa-trash"></i> Supprimer la sélection
+                        </button>
+                    </div>
+                </div>
 
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 50px; text-align: center;">Sélec.</th>
+                                <th>Chemin du fichier</th>
+                                <th class="size-col">Taille unitaire</th>
+                                <th class="actions-col">Emplacement</th>
+                            </tr>
+                        </thead>
+                        <tbody id="duplicateList">
+                            <!-- Duplicates populated dynamically -->
+                        </tbody>
+                    </table>
+                    <div id="loadMoreContainer" class="load-more-container hidden">
+                        <button onclick="renderNextDuplicateBatch()" class="btn-secondary" style="margin: 0 auto;">
+                            <i class="fas fa-chevron-down"></i> Afficher les doublons suivants (<span id="remainingDupsCount">0</span> restants)
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Empty State -->
             <div id="empty-state" class="empty-state">
                 <i class="fas fa-folder-open"></i>
-                <p>Enter a path and click Scan to start analyzing.</p>
+                <p>Entrez un chemin et cliquez sur <strong>Analyser</strong> pour visualiser les sous-dossiers,<br>ou sur <strong>Doublons</strong> pour détecter l'espace gaspillé instantanément.</p>
             </div>
         </main>
     </div>
 
     <script>
-        let currentData = [];
+        // Client-side instant navigation cache
+        const folderCache = new Map();
+        let currentFolderItems = [];
+        let sortDirection = { name: 1, size: -1 }; // 1: asc, -1: desc
+        let currentSortField = 'size';
+
+        // Duplicates pagination state
+        let allDuplicateGroups = [];
+        let currentDuplicateRenderIndex = 0;
+        const DUP_BATCH_SIZE = 30;
+
+        let duplicateStatusInterval = null;
 
         document.addEventListener('DOMContentLoaded', () => {
-            scanPath(); // Auto-scan default path on load
+            // Auto-scan default path on load
+            scanPath(false);
+            
+            // Allow pressing Enter in path input
+            document.getElementById('pathInput').addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    scanPath(false);
+                }
+            });
         });
 
-        async function scanPath() {
-            const path = document.getElementById('pathInput').value;
+        function onToggleOption() {
+            folderCache.clear();
+            scanPath(true);
+        }
+
+        // -------------------------------------------------------------
+        // Folder Navigation & Scanning (with Cache)
+        // -------------------------------------------------------------
+        async function scanPath(forceRefresh = false) {
+            const pathInput = document.getElementById('pathInput');
+            const path = pathInput.value.trim();
+            if (!path) return;
+
+            const showHidden = document.getElementById('toggleHidden') ? document.getElementById('toggleHidden').checked : true;
+            const includeAppData = document.getElementById('toggleAppData') ? document.getElementById('toggleAppData').checked : true;
+
             const scanBtn = document.getElementById('scanBtn');
+            const dupBtn = document.getElementById('dupBtn');
             const loading = document.getElementById('loading');
+            const loadingTitle = document.getElementById('loading-title');
+            const loadingText = document.getElementById('loading-text');
+            const dupProgressDetails = document.getElementById('dup-progress-details');
             const results = document.getElementById('results');
+            const duplicateResults = document.getElementById('duplicate-results');
             const emptyState = document.getElementById('empty-state');
-            const folderList = document.getElementById('folderList');
+
+            const cacheKey = `${path.toLowerCase()}__h${showHidden ? 1 : 0}_a${includeAppData ? 1 : 0}`;
+
+            // Check client cache if not forced
+            if (!forceRefresh && folderCache.has(cacheKey)) {
+                const cachedData = folderCache.get(cacheKey);
+                renderFolderResults(cachedData.folders, cachedData.path);
+                return;
+            }
 
             scanBtn.disabled = true;
+            dupBtn.disabled = true;
+            loadingTitle.innerText = "Analyse du dossier";
+            loadingText.innerText = `Calcul des tailles pour : ${path}`;
+            dupProgressDetails.classList.add('hidden');
             loading.classList.remove('hidden');
             results.classList.add('hidden');
+            duplicateResults.classList.add('hidden');
             emptyState.classList.add('hidden');
-            folderList.innerHTML = '';
 
             try {
-                const response = await fetch(`/api/scan?path=${encodeURIComponent(path)}`);
+                const url = `/api/scan?path=${encodeURIComponent(path)}&hidden=${showHidden ? '1' : '0'}&appdata=${includeAppData ? '1' : '0'}${forceRefresh ? '&refresh=1' : ''}`;
+                const response = await fetch(url);
                 const data = await response.json();
 
                 if (response.ok) {
-                    currentData = data.folders;
-                    renderFolders(data.folders);
-                    updateBreadcrumbs(data.path);
-                    results.classList.remove('hidden');
+                    // Save in client cache
+                    folderCache.set(cacheKey, data);
+                    renderFolderResults(data.folders, data.path);
                 } else {
-                    alert('Error: ' + data.error);
+                    alert('Erreur : ' + (data.error || 'Impossible d\'accéder à ce chemin.'));
                     emptyState.classList.remove('hidden');
                 }
             } catch (error) {
-                console.error('Error:', error);
-                alert('Failed to connect to server.');
+                console.error('Scan error:', error);
+                alert('Échec de la connexion au serveur.');
                 emptyState.classList.remove('hidden');
             } finally {
                 loading.classList.add('hidden');
                 scanBtn.disabled = false;
+                dupBtn.disabled = false;
             }
         }
 
-        function renderFolders(folders) {
+        function refreshCurrentPath() {
+            const path = document.getElementById('pathInput').value;
+            // Invalidate client cache for current path
+            folderCache.delete(path.toLowerCase());
+            scanPath(true);
+        }
+
+        function renderFolderResults(items, currentPath) {
+            currentFolderItems = items || [];
+            updateBreadcrumbs(currentPath);
+            
+            // Calculate total size and stats
+            const totalSize = currentFolderItems.reduce((acc, it) => acc + (it.size || 0), 0);
+            const folderCount = currentFolderItems.filter(it => it.type === 'folder').length;
+            const fileCount = currentFolderItems.filter(it => it.type === 'file').length;
+            
+            document.getElementById('scanStatsText').innerText = 
+                `${folderCount} dossier(s), ${fileCount} fichier(s) • ${formatBytes(totalSize)}`;
+
+            sortFolderList(currentSortField, false);
+            document.getElementById('results').classList.remove('hidden');
+        }
+
+        function sortFolderList(field, toggle = true) {
+            if (toggle) {
+                sortDirection[field] = sortDirection[field] === 1 ? -1 : 1;
+            }
+            currentSortField = field;
+
+            // Update sort icons
+            const iconName = document.getElementById('sortIconName');
+            const iconSize = document.getElementById('sortIconSize');
+            iconName.className = 'fas fa-sort';
+            iconSize.className = 'fas fa-sort';
+
+            if (field === 'name') {
+                iconName.className = sortDirection.name === 1 ? 'fas fa-sort-up' : 'fas fa-sort-down';
+            } else {
+                iconSize.className = sortDirection.size === 1 ? 'fas fa-sort-up' : 'fas fa-sort-down';
+            }
+
+            currentFolderItems.sort((a, b) => {
+                if (field === 'name') {
+                    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * sortDirection.name;
+                } else {
+                    return (a.size - b.size) * sortDirection.size;
+                }
+            });
+
+            populateFolderTable();
+        }
+
+        function populateFolderTable() {
             const tbody = document.getElementById('folderList');
             tbody.innerHTML = '';
 
-            if (folders.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="no-data">No subfolders found or access denied.</td></tr>';
+            if (currentFolderItems.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="empty-state" style="padding: 2rem;">Aucun élément trouvé ou accès non autorisé.</td></tr>';
                 return;
             }
 
-            folders.forEach(folder => {
+            const fragment = document.createDocumentFragment();
+
+            currentFolderItems.forEach(item => {
                 const tr = document.createElement('tr');
+                const isFolder = item.type === 'folder';
+                const iconClass = isFolder ? 'fa-folder' : 'fa-file';
+                const safePath = item.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
                 tr.innerHTML = `
                     <td>
-                        <div class="folder-name" onclick="navigateTo('${folder.path.replace(/\\/g, '\\\\')}')">
-                            <i class="fas fa-folder"></i>
-                            <span>${folder.name}</span>
+                        <div class="folder-name" ${isFolder ? `onclick="navigateTo('${safePath}')"` : `onclick="openFolder('${safePath}')"`} title="${item.path}">
+                            <i class="fas ${iconClass}"></i>
+                            <span>${item.name}</span>
                         </div>
                     </td>
-                    <td class="size-col">${folder.size_readable}</td>
+                    <td class="size-col">${item.size_readable}</td>
                     <td class="actions-col">
-                        <button class="btn-icon" onclick="openFolder('${folder.path.replace(/\\/g, '\\\\')}')" title="Open in Explorer">
+                        <button class="btn-icon" onclick="openFolder('${safePath}')" title="Ouvrir dans l'Explorateur Windows">
                             <i class="fas fa-external-link-alt"></i>
                         </button>
-                        <button class="btn-icon btn-delete" onclick="deleteFolder('${folder.path.replace(/\\/g, '\\\\')}')" title="Delete Folder">
+                        <button class="btn-icon btn-delete" onclick="deleteItem('${safePath}', ${isFolder})" title="Mettre à la corbeille">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
                 `;
-                tbody.appendChild(tr);
+                fragment.appendChild(tr);
             });
+
+            tbody.appendChild(fragment);
         }
 
         function updateBreadcrumbs(path) {
             const breadcrumbs = document.getElementById('breadcrumbs');
             breadcrumbs.innerHTML = '';
 
-            // Normalize path separators
             const parts = path.split(/[/\\]/).filter(p => p);
-
             let accumulatedPath = '';
 
             parts.forEach((part, index) => {
-                // If it's the first part and looks like a drive (C:), treat it as root
                 if (index === 0 && part.includes(':')) {
                     accumulatedPath = part + '\\';
                 } else {
@@ -156,7 +378,6 @@
                 const span = document.createElement('span');
                 span.className = 'breadcrumb-item';
                 span.innerText = part;
-                // Use a closure to capture the correct path
                 const targetPath = accumulatedPath;
                 span.onclick = () => navigateTo(targetPath);
 
@@ -173,25 +394,19 @@
 
         function goUp() {
             const currentPath = document.getElementById('pathInput').value;
-            // Simple parent directory calculation
-            // Remove trailing slash if exists
             let cleanPath = currentPath.endsWith('\\') || currentPath.endsWith('/') ? currentPath.slice(0, -1) : currentPath;
-
             const lastSeparatorIndex = Math.max(cleanPath.lastIndexOf('\\'), cleanPath.lastIndexOf('/'));
 
             if (lastSeparatorIndex > -1) {
-                // If it's just "C:", don't go up
                 if (cleanPath.length <= 3 && cleanPath.includes(':')) return;
-
                 const parentPath = cleanPath.substring(0, lastSeparatorIndex);
-                // If parent path becomes empty or just drive letter without slash, ensure it's valid
                 navigateTo(parentPath || cleanPath.substring(0, lastSeparatorIndex + 1));
             }
         }
 
         async function navigateTo(path) {
             document.getElementById('pathInput').value = path;
-            await scanPath();
+            await scanPath(false);
         }
 
         async function openFolder(path) {
@@ -202,15 +417,16 @@
                     body: JSON.stringify({ path: path })
                 });
                 if (!response.ok) {
-                    alert('Failed to open folder.');
+                    alert('Impossible d\'ouvrir l\'emplacement.');
                 }
             } catch (e) {
                 console.error(e);
             }
         }
 
-        async function deleteFolder(path) {
-            if (!confirm(`Are you sure you want to delete "${path}"? This cannot be undone via this app.`)) {
+        async function deleteItem(path, isFolder) {
+            const label = isFolder ? "le dossier" : "le fichier";
+            if (!confirm(`Voulez-vous déplacer ${label} "${path}" vers la corbeille ?`)) {
                 return;
             }
 
@@ -223,35 +439,324 @@
 
                 const result = await response.json();
                 if (result.success) {
-                    // Refresh current view
-                    scanPath();
+                    // Invalidate caches
+                    folderCache.clear();
+                    scanPath(true);
                 } else {
-                    alert('Error deleting folder: ' + result.error);
+                    alert('Erreur lors de la suppression : ' + result.error);
                 }
             } catch (e) {
                 console.error(e);
-                alert('Failed to delete folder.');
+                alert('Échec de la suppression.');
+            }
+        }
+
+        // -------------------------------------------------------------
+        // High-Speed Duplicate Scanner
+        // -------------------------------------------------------------
+        async function startDuplicateScan() {
+            const currentPath = document.getElementById('pathInput').value.trim();
+            const scanBtn = document.getElementById('scanBtn');
+            const dupBtn = document.getElementById('dupBtn');
+            const loading = document.getElementById('loading');
+            const loadingTitle = document.getElementById('loading-title');
+            const loadingText = document.getElementById('loading-text');
+            const dupProgressDetails = document.getElementById('dup-progress-details');
+            const results = document.getElementById('results');
+            const duplicateResults = document.getElementById('duplicate-results');
+            const emptyState = document.getElementById('empty-state');
+
+            scanBtn.disabled = true;
+            dupBtn.disabled = true;
+
+            loadingTitle.innerText = "Recherche de doublons haute performance";
+            loadingText.innerText = `Analyse du répertoire : ${currentPath}...`;
+            dupProgressDetails.classList.remove('hidden');
+            loading.classList.remove('hidden');
+            results.classList.add('hidden');
+            duplicateResults.classList.add('hidden');
+            emptyState.classList.add('hidden');
+
+            // Reset progress UI
+            updateProgressUI({ progress: 0, files_scanned: 0, speed: 0, message: "Démarrage du scan..." });
+
+            try {
+                const showHidden = document.getElementById('toggleHidden') ? document.getElementById('toggleHidden').checked : true;
+                const includeAppData = document.getElementById('toggleAppData') ? document.getElementById('toggleAppData').checked : true;
+
+                // Start background worker
+                const startRes = await fetch('/api/scan-duplicates/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        path: currentPath,
+                        hidden: showHidden,
+                        appdata: includeAppData
+                    })
+                });
+
+                const startData = await startRes.json();
+                if (!startRes.ok || !startData.success) {
+                    alert('Erreur lors du démarrage : ' + (startData.error || 'Inconnu'));
+                    loading.classList.add('hidden');
+                    scanBtn.disabled = false;
+                    dupBtn.disabled = false;
+                    return;
+                }
+
+                // Poll status every 300ms for smooth live updates
+                duplicateStatusInterval = setInterval(async () => {
+                    try {
+                        const statusRes = await fetch('/api/scan-duplicates/status');
+                        if (statusRes.ok) {
+                            const status = await statusRes.json();
+                            updateProgressUI(status);
+
+                            if (status.status === 'completed') {
+                                clearInterval(duplicateStatusInterval);
+                                loading.classList.add('hidden');
+                                scanBtn.disabled = false;
+                                dupBtn.disabled = false;
+                                displayDuplicateResults(status.duplicates || []);
+                            } else if (status.status === 'cancelled' || status.status === 'error') {
+                                clearInterval(duplicateStatusInterval);
+                                loading.classList.add('hidden');
+                                scanBtn.disabled = false;
+                                dupBtn.disabled = false;
+                                if (status.status === 'error') {
+                                    alert('Erreur durant l\'analyse : ' + status.error);
+                                }
+                                emptyState.classList.remove('hidden');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Polling error:', err);
+                    }
+                }, 300);
+
+            } catch (e) {
+                console.error(e);
+                alert('Erreur lors de la requête de scan.');
+                loading.classList.add('hidden');
+                scanBtn.disabled = false;
+                dupBtn.disabled = false;
+            }
+        }
+
+        function updateProgressUI(status) {
+            const progressBar = document.getElementById('progressBarFill');
+            const loadingText = document.getElementById('loading-text');
+            const metricProgress = document.getElementById('metricProgress');
+            const metricFiles = document.getElementById('metricFiles');
+            const metricSpeed = document.getElementById('metricSpeed');
+
+            const pct = Math.min(100, Math.max(0, status.progress || 0));
+            progressBar.style.width = `${pct}%`;
+            metricProgress.innerText = `${Math.round(pct)}%`;
+            metricFiles.innerText = (status.files_scanned || 0).toLocaleString();
+            metricSpeed.innerText = `${Math.round(status.speed || 0).toLocaleString()} fich/s`;
+
+            if (status.message) {
+                loadingText.innerText = status.message;
+            }
+        }
+
+        async function cancelDuplicateScan() {
+            try {
+                await fetch('/api/scan-duplicates/cancel', { method: 'POST' });
+            } catch (e) {
+                console.error('Cancel failed', e);
+            }
+        }
+
+        function displayDuplicateResults(groups) {
+            allDuplicateGroups = groups || [];
+            currentDuplicateRenderIndex = 0;
+
+            const duplicateResults = document.getElementById('duplicate-results');
+            const tbody = document.getElementById('duplicateList');
+            tbody.innerHTML = '';
+
+            const totalWasted = allDuplicateGroups.reduce((acc, g) => acc + (g.wasted_size || 0), 0);
+            document.getElementById('dupTotalGroups').innerText = allDuplicateGroups.length.toLocaleString();
+            document.getElementById('dupTotalWasted').innerText = formatBytes(totalWasted);
+
+            if (allDuplicateGroups.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="empty-state" style="padding: 2.5rem;">Aucun fichier en double détecté dans ce dossier ! 🎉</td></tr>';
+                document.getElementById('loadMoreContainer').classList.add('hidden');
+                duplicateResults.classList.remove('hidden');
+                return;
+            }
+
+            // Render first batch
+            renderNextDuplicateBatch();
+            duplicateResults.classList.remove('hidden');
+        }
+
+        function renderNextDuplicateBatch() {
+            const tbody = document.getElementById('duplicateList');
+            const endIndex = Math.min(allDuplicateGroups.length, currentDuplicateRenderIndex + DUP_BATCH_SIZE);
+            const fragment = document.createDocumentFragment();
+
+            for (let i = currentDuplicateRenderIndex; i < endIndex; i++) {
+                const group = allDuplicateGroups[i];
+                
+                // Group header row
+                const headerTr = document.createElement('tr');
+                headerTr.className = 'group-header-row';
+                headerTr.innerHTML = `
+                    <td colspan="4">
+                        <i class="fas fa-layer-group" style="color: #60a5fa; margin-right: 0.5rem;"></i>
+                        <strong>Groupe ${i + 1}</strong> • Taille : ${group.size_readable} • ${group.files.length} copies identiques • 
+                        <span style="color: #fbbf24;">${group.wasted_readable || ''} gaspillés</span>
+                    </td>
+                `;
+                fragment.appendChild(headerTr);
+
+                // Group files
+                group.files.forEach((file, fileIdx) => {
+                    const tr = document.createElement('tr');
+                    // Recommended selection: check all copies except the first one
+                    const isChecked = fileIdx > 0 ? 'checked' : '';
+                    const safePath = file.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
+                    tr.innerHTML = `
+                        <td style="text-align: center;">
+                            <input type="checkbox" class="duplicate-checkbox" value="${safePath}" ${isChecked}>
+                        </td>
+                        <td>
+                            <div class="folder-name" title="${file}">
+                                <i class="fas fa-file"></i>
+                                <span style="word-break: break-all; font-size: 0.95rem;">${file}</span>
+                            </div>
+                        </td>
+                        <td class="size-col">${group.size_readable}</td>
+                        <td class="actions-col">
+                            <button class="btn-icon" onclick="openFileLocation('${safePath}')" title="Voir dans le dossier">
+                                <i class="fas fa-folder-open"></i>
+                            </button>
+                        </td>
+                    `;
+                    fragment.appendChild(tr);
+                });
+            }
+
+            tbody.appendChild(fragment);
+            currentDuplicateRenderIndex = endIndex;
+
+            const remaining = allDuplicateGroups.length - currentDuplicateRenderIndex;
+            const loadMoreContainer = document.getElementById('loadMoreContainer');
+            if (remaining > 0) {
+                document.getElementById('remainingDupsCount').innerText = remaining.toLocaleString();
+                loadMoreContainer.classList.remove('hidden');
+            } else {
+                loadMoreContainer.classList.add('hidden');
+            }
+        }
+
+        function selectRecommendedDuplicates() {
+            const rows = document.querySelectorAll('#duplicateList tr');
+            let isFirstInGroup = true;
+
+            rows.forEach(row => {
+                if (row.classList.contains('group-header-row')) {
+                    isFirstInGroup = true;
+                } else {
+                    const cb = row.querySelector('.duplicate-checkbox');
+                    if (cb) {
+                        cb.checked = !isFirstInGroup;
+                        isFirstInGroup = false;
+                    }
+                }
+            });
+        }
+
+        function toggleAllDuplicates(checked) {
+            document.querySelectorAll('.duplicate-checkbox').forEach(cb => {
+                cb.checked = checked;
+            });
+        }
+
+        async function openFileLocation(filePath) {
+            const dirPath = filePath.substring(0, Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')));
+            openFolder(dirPath);
+        }
+
+        async function deleteSelectedDuplicates() {
+            const checkboxes = document.querySelectorAll('.duplicate-checkbox:checked');
+            const filesToDelete = Array.from(checkboxes).map(cb => cb.value);
+
+            if (filesToDelete.length === 0) {
+                alert('Aucun fichier sélectionné pour la suppression.');
+                return;
+            }
+
+            if (!confirm(`Voulez-vous vraiment déplacer ${filesToDelete.length} fichier(s) vers la corbeille ?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/delete-files', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ files: filesToDelete })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    alert(`${result.deleted_count} fichier(s) supprimé(s) avec succès !`);
+                    if (result.errors && result.errors.length > 0) {
+                        alert('Certains fichiers n\'ont pas pu être supprimés :\n' + result.errors.join('\n'));
+                    }
+                    // Invalidate caches
+                    folderCache.clear();
+                    // Re-filter local list to remove deleted files instantly
+                    const deletedSet = new Set(filesToDelete);
+                    allDuplicateGroups = allDuplicateGroups.map(group => ({
+                        ...group,
+                        files: group.files.filter(f => !deletedSet.has(f))
+                    })).filter(group => group.files.length > 1);
+
+                    displayDuplicateResults(allDuplicateGroups);
+                } else {
+                    alert('Erreur lors de la suppression : ' + result.error);
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Échec de la suppression des fichiers.');
             }
         }
 
         async function shutdownServer() {
-            if (!confirm('Are you sure you want to stop the application?')) {
+            if (!confirm('Voulez-vous vraiment arrêter l\'application ?')) {
                 return;
             }
 
             try {
                 await fetch('/api/shutdown', { method: 'POST' });
                 document.body.innerHTML = `
-                    <div style="display:flex;justify-content:center;align-items:center;height:100vh;background:#1a1a1a;color:white;flex-direction:column;gap:1rem;">
-                        <i class="fas fa-power-off" style="font-size:3rem;color:#ef4444;"></i>
-                        <h1>Application Stopped</h1>
-                        <p>You can close this tab now.</p>
+                    <div style="display:flex;justify-content:center;align-items:center;height:100vh;background:#12141a;color:white;flex-direction:column;gap:1.5rem;">
+                        <i class="fas fa-power-off" style="font-size:3.5rem;color:#ef4444;"></i>
+                        <h1 style="font-size:2rem;">Application arrêtée</h1>
+                        <p style="color:#94a3b8;">Vous pouvez maintenant fermer cet onglet en toute sécurité.</p>
                     </div>
                 `;
             } catch (e) {
                 console.error(e);
-                alert('Failed to shutdown server.');
+                alert('Échec de l\'arrêt du serveur.');
             }
+        }
+
+        function formatBytes(bytes) {
+            if (bytes <= 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let size = bytes;
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex++;
+            }
+            return `${size.toFixed(2)} ${units[unitIndex]}`;
         }
     </script>
 </body>
